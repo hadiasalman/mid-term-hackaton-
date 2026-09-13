@@ -28,6 +28,9 @@ def init_firebase():
     if not firebase_admin._apps:
         if "firebase" in st.secrets:
             cred_dict = dict(st.secrets["firebase"])
+            # Fix escaped newlines in the private key from TOML secrets
+            if "private_key" in cred_dict:
+                cred_dict["private_key"] = cred_dict["private_key"].replace("\\n", "\n")
             cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred)
         else:
