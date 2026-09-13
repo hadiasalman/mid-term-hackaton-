@@ -10,11 +10,8 @@ except ImportError:
     except ImportError:
         genai = None
 
-import firebase_admin
-from firebase_admin import credentials, firestore
-
 # ============================================================
-# 1. PAGE & FIREBASE INITIALIZATION
+# 1. PAGE & STATE INITIALIZATION
 # ============================================================
 st.set_page_config(
     page_title="UniBridge Platform",
@@ -23,25 +20,39 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-@st.cache_resource
-def init_firebase():
-    if not firebase_admin._apps:
-        if "firebase" in st.secrets:
-            cred_dict = dict(st.secrets["firebase"])
-            # Fix escaped newlines in the private key from TOML secrets
-            if "private_key" in cred_dict:
-                cred_dict["private_key"] = cred_dict["private_key"].replace("\\n", "\n")
-            cred = credentials.Certificate(cred_dict)
-            firebase_admin.initialize_app(cred)
-        else:
-            if os.path.exists("serviceAccountKey.json"):
-                cred = credentials.Certificate("serviceAccountKey.json")
-                firebase_admin.initialize_app(cred)
-            else:
-                return None
-    return firestore.client()
+# Initialize local session state database if it doesn't exist
+if "users" not in st.session_state:
+    st.session_state.users = [
+        {
+            "id": "u1",
+            "name": "Alex Johnson",
+            "email": "alex@unibridge.edu",
+            "password_hash": hashlib.sha256("password123".encode()).hexdigest(),
+            "role": "Senior",
+            "university": "ITECH College",
+            "department": "Artificial Intelligence",
+            "bio": "Senior AI student passionate about machine learning and neural networks.",
+            "expertise": "Python, Machine Learning, TensorFlow"
+        }
+    ]
 
-db = init_firebase()
+if "questions" not in st.session_state:
+    st.session_state.questions = [
+        {
+            "id": "q1",
+            "junior_id": "u2",
+            "junior_name": "Sarah Connor",
+            "target_senior_id": None,
+            "title": "How to structure a Neural Network for image classification?",
+            "details": "I'm working on a CNN project and struggling with the layer dimensions.",
+            "department": "Artificial Intelligence",
+            "status": "Unanswered",
+            "created_at": "2026-06-01"
+        }
+    ]
+
+if "answers" not in st.session_state:
+    st.session_state.answers = []
 
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
@@ -135,13 +146,9 @@ if current_theme != st.session_state.theme:
 st.sidebar.markdown("---")
 
 # ============================================================
-# 3. AUTHENTICATION (FIRESTORE WORKFLOW)
+# 3. AUTHENTICATION WORKFLOW
 # ============================================================
 if not st.session_state.auth_user:
-    if db is None:
-        st.error("⚠️ Firebase database connection is not configured. Please add your credentials to Streamlit Secrets.")
-        st.stop()
-
     st.subheader("🔑 Access UniBridge")
     auth_tab1, auth_tab2 = st.tabs(["Login", "Register Account"])
 
@@ -156,14 +163,14 @@ if not st.session_state.auth_user:
                 if not login_email or not login_pass:
                     st.error("Please provide both email and password.")
                 else:
-                    users_ref = db.collection("users")
-                    query = users_ref.where("email", "==", login_email.strip().lower()).where("password_hash", "==", hash_password(login_pass)).get()
-
-                    if query:
-                        user_doc = query[0].to_dict()
-                        user_doc["id"] = query[0].id
-                        st.session_state.auth_user = user_doc
-                        st.success(f"Welcome back, {user_doc['name']}!")
+                    hashed = hash_password(login_pass)
+                    matched_user = next(
+                        (u for u in st.session_state.users if u["email"] == login_email.strip().lower() and u["password_hash"] == hashed),
+                        None
+                    )
+                    if matched_user:
+                        st.session_state.auth_user = matched_user
+                        st.success(f"Welcome back, {matched_user['name']}!")
                         st.rerun()
                     else:
                         st.error("Invalid email address or password.")
@@ -186,11 +193,12 @@ if not st.session_state.auth_user:
                 if not reg_name or not reg_email or not reg_pass or not reg_dept:
                     st.error("Please fill in all required fields.")
                 else:
-                    existing = db.collection("users").where("email", "==", reg_email.strip().lower()).get()
+                    existing = any(u["email"] == reg_email.strip().lower() for u in st.session_state.users)
                     if existing:
                         st.error("An account with this email address already exists.")
                     else:
                         new_user = {
+                            "id": f"u_{len(st.session_state.users) + 1}",
                             "name": reg_name.strip(),
                             "email": reg_email.strip().lower(),
                             "password_hash": hash_password(reg_pass),
@@ -200,7 +208,7 @@ if not st.session_state.auth_user:
                             "bio": reg_bio.strip(),
                             "expertise": reg_exp.strip()
                         }
-                        db.collection("users").add(new_user)
+                        st.session_state.users.append(new_user)
                         st.success("Account created successfully! Please sign in using the Login tab.")
     st.stop()
 
@@ -228,16 +236,14 @@ if st.sidebar.button("🚪 Logout", use_container_width=True):
 # ============================================================
 # 5. DASHBOARDS
 # ============================================================
-if selected_page == "Dashboard" and db:
+if selected_page == "Dashboard":
     st.subheader(f"👋 Welcome, {user['name']}!")
 
-    q_docs = db.collection("questions").get()
-    q_total = len(q_docs)
-    q_answered = len([q for q in q_docs if q.to_dict().get("status") == "Answered"])
+    q_total = len(st.session_state.questions)
+    q_answered = len([q for q in st.session_state.questions if q.get("status") == "Answered"])
 
-    u_docs = db.collection("users").get()
-    seniors_count = len([u for u in u_docs if u.to_dict().get("role") == "Senior"])
-    juniors_count = len([u for u in u_docs if u.to_dict().get("role") == "Junior"])
+    seniors_count = len([u for u in st.session_state.users if u.get("role") == "Senior"])
+    juniors_count = len([u for u in st.session_state.users if u.get("role") == "Junior"])
 
     m1, m2, m3, m4 = st.columns(4)
     m1.markdown(f"<div class='stat-card'><div class='stat-number'>{q_total}</div><div class='stat-label'>Total Questions</div></div>", unsafe_allow_html=True)
@@ -249,8 +255,7 @@ if selected_page == "Dashboard" and db:
 
     if user["role"] == "Junior":
         st.markdown("##### 📌 Recent Community Questions")
-        for q in q_docs[:5]:
-            q_data = q.to_dict()
+        for q_data in st.session_state.questions[:5]:
             st.markdown(f"""
             <div class='card'>
                 <b>{q_data.get('title')}</b> <span style='font-size:12px; color:{subtext_color}'>({q_data.get('department')})</span><br>
@@ -260,12 +265,11 @@ if selected_page == "Dashboard" and db:
 
     elif user["role"] == "Senior":
         st.markdown("##### 📥 Open Questions Needing Help")
-        open_q = [q for q in q_docs if q.to_dict().get("status") == "Unanswered"]
+        open_q = [q for q in st.session_state.questions if q.get("status") == "Unanswered"]
         if not open_q:
             st.info("No unanswered questions right now. Great job!")
         else:
-            for q in open_q:
-                q_data = q.to_dict()
+            for q_data in open_q:
                 st.markdown(f"""
                 <div class='card'>
                     <b>{q_data.get('title')}</b> <span style='font-size:12px; color:{subtext_color}'>({q_data.get('department')})</span><br>
@@ -277,14 +281,13 @@ if selected_page == "Dashboard" and db:
 # ============================================================
 # 6. JUNIOR WORKFLOW
 # ============================================================
-elif selected_page == "Ask Question" and user["role"] == "Junior" and db:
+elif selected_page == "Ask Question" and user["role"] == "Junior":
     st.subheader("❓ Ask a Senior")
 
-    seniors_docs = db.collection("users").where("role", "==", "Senior").get()
+    seniors_docs = [u for u in st.session_state.users if u.get("role") == "Senior"]
     senior_options = {"General - Any Senior": None}
     for s in seniors_docs:
-        s_data = s.to_dict()
-        senior_options[f"{s_data.get('name')} (Skills: {s_data.get('expertise', 'General')})"] = s.id
+        senior_options[f"{s.get('name')} (Skills: {s.get('expertise', 'General')})"] = s.get("id")
 
     with st.form("ask_q_form"):
         q_title = st.text_input("Question Summary / Title")
@@ -299,6 +302,7 @@ elif selected_page == "Ask Question" and user["role"] == "Junior" and db:
                 st.error("Please provide both a title and detailed explanation.")
             else:
                 new_q = {
+                    "id": f"q_{len(st.session_state.questions) + 1}",
                     "junior_id": user["id"],
                     "junior_name": user["name"],
                     "target_senior_id": senior_options[q_target],
@@ -306,21 +310,20 @@ elif selected_page == "Ask Question" and user["role"] == "Junior" and db:
                     "details": q_details.strip(),
                     "department": q_dept.strip(),
                     "status": "Unanswered",
-                    "created_at": firestore.SERVER_TIMESTAMP
+                    "created_at": "2026-06-01"
                 }
-                db.collection("questions").add(new_q)
+                st.session_state.questions.append(new_q)
                 st.success("Your question has been posted successfully!")
 
-elif selected_page == "My Questions & Answers" and user["role"] == "Junior" and db:
+elif selected_page == "My Questions & Answers" and user["role"] == "Junior":
     st.subheader("📚 My Submitted Questions")
 
-    my_q = db.collection("questions").where("junior_id", "==", user["id"]).get()
+    my_q = [q for q in st.session_state.questions if q.get("junior_id") == user["id"]]
 
     if not my_q:
         st.info("You haven't asked any questions yet.")
     else:
-        for q in my_q:
-            q_data = q.to_dict()
+        for q_data in my_q:
             st.markdown(f"""
             <div class='card'>
                 <h4>{q_data.get('title')}</h4>
@@ -329,10 +332,9 @@ elif selected_page == "My Questions & Answers" and user["role"] == "Junior" and 
             </div>
             """, unsafe_allow_html=True)
 
-            ans_docs = db.collection("answers").where("question_id", "==", q.id).get()
+            ans_docs = [a for a in st.session_state.answers if a.get("question_id") == q_data.get("id")]
             if ans_docs:
-                for ans in ans_docs:
-                    a_data = ans.to_dict()
+                for a_data in ans_docs:
                     st.markdown(f"""
                     <div style='margin-left: 30px; background-color:{card_bg}; border-left: 3px solid {accent_color}; padding: 12px; margin-bottom: 10px;'>
                         <b>💬 Answer from {a_data.get('senior_name')}:</b>
@@ -346,28 +348,26 @@ elif selected_page == "My Questions & Answers" and user["role"] == "Junior" and 
 # ============================================================
 # 7. SENIOR WORKFLOW
 # ============================================================
-elif selected_page == "Answer Questions" and user["role"] == "Senior" and db:
+elif selected_page == "Answer Questions" and user["role"] == "Senior":
     st.subheader("📝 Answer Junior Questions")
 
-    questions = db.collection("questions").get()
-
-    if not questions:
+    if not st.session_state.questions:
         st.info("No questions currently logged.")
     else:
-        for q in questions:
-            q_data = q.to_dict()
+        for q_data in st.session_state.questions:
+            q_id = q_data.get("id")
             with st.expander(f"Q: {q_data.get('title')} (Asked by {q_data.get('junior_name')})"):
                 st.write(f"**Details:** {q_data.get('details')}")
 
-                ans_docs = db.collection("answers").where("question_id", "==", q.id).get()
+                ans_docs = [a for a in st.session_state.answers if a.get("question_id") == q_id]
                 if ans_docs:
                     st.markdown("---")
                     st.markdown("**Existing Answers:**")
                     for a in ans_docs:
-                        st.markdown(f"- *{a.to_dict().get('senior_name')}*: {a.to_dict().get('answer_text')}")
+                        st.markdown(f"- *{a.get('senior_name')}*: {a.get('answer_text')}")
 
                 st.markdown("---")
-                with st.form(f"ans_form_{q.id}"):
+                with st.form(f"ans_form_{q_id}"):
                     ans_text = st.text_area("Your Response")
                     submit_ans = st.form_submit_button("Submit Response")
 
@@ -376,29 +376,28 @@ elif selected_page == "Answer Questions" and user["role"] == "Senior" and db:
                             st.error("Response cannot be empty.")
                         else:
                             new_ans = {
-                                "question_id": q.id,
+                                "question_id": q_id,
                                 "senior_id": user["id"],
                                 "senior_name": user["name"],
                                 "answer_text": ans_text.strip(),
-                                "created_at": firestore.SERVER_TIMESTAMP
+                                "created_at": "2026-06-01"
                             }
-                            db.collection("answers").add(new_ans)
-                            db.collection("questions").document(q.id).update({"status": "Answered"})
+                            st.session_state.answers.append(new_ans)
+                            q_data["status"] = "Answered"
                             st.success("Your answer has been saved!")
                             st.rerun()
 
 # ============================================================
 # 8. SENIOR DISCOVERY
 # ============================================================
-elif selected_page == "Find Seniors" and db:
+elif selected_page == "Find Seniors":
     st.subheader("🔍 Discover Seniors & Mentors")
 
     search_term = st.text_input("Search by Name, Expertise, or Department").strip().lower()
-    seniors_docs = db.collection("users").where("role", "==", "Senior").get()
+    seniors_docs = [u for u in st.session_state.users if u.get("role") == "Senior"]
 
     matching_seniors = []
-    for s in seniors_docs:
-        s_data = s.to_dict()
+    for s_data in seniors_docs:
         if search_term:
             if search_term in s_data.get('name', '').lower() or search_term in s_data.get('expertise', '').lower() or search_term in s_data.get('department', '').lower():
                 matching_seniors.append(s_data)
@@ -463,7 +462,7 @@ elif selected_page == "AI Assistant":
 # ============================================================
 # 10. SETTINGS
 # ============================================================
-elif selected_page == "Settings" and db:
+elif selected_page == "Settings":
     st.subheader("⚙️ Account & Application Settings")
 
     with st.form("settings_form"):
@@ -477,19 +476,11 @@ elif selected_page == "Settings" and db:
         save_settings = st.form_submit_button("Save Settings")
 
         if save_settings:
-            db.collection("users").document(user["id"]).update({
-                "name": up_name.strip(),
-                "university": up_univ.strip(),
-                "department": up_dept.strip(),
-                "bio": up_bio.strip(),
-                "expertise": up_exp.strip()
-            })
-
-            st.session_state.auth_user["name"] = up_name.strip()
-            st.session_state.auth_user["university"] = up_univ.strip()
-            st.session_state.auth_user["department"] = up_dept.strip()
-            st.session_state.auth_user["bio"] = up_bio.strip()
-            st.session_state.auth_user["expertise"] = up_exp.strip()
+            user["name"] = up_name.strip()
+            user["university"] = up_univ.strip()
+            user["department"] = up_dept.strip()
+            user["bio"] = up_bio.strip()
+            user["expertise"] = up_exp.strip()
 
             st.success("Settings updated successfully!")
             st.rerun()
