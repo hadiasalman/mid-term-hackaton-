@@ -28,7 +28,7 @@ def init_firebase():
     if not firebase_admin._apps:
         if "firebase" in st.secrets:
             cred_dict = dict(st.secrets["firebase"])
-           cred = credentials.Certificate(dict(st.secrets["firebase"]))
+            cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred)
         else:
             if os.path.exists("serviceAccountKey.json"):
