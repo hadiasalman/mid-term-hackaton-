@@ -9,10 +9,6 @@ except ImportError:
         import google.genai as genai
     except ImportError:
         genai = None
-
-import firebase_admin
-from firebase_admin import credentials, firestore
-
 # ============================================================
 # 1. PAGE & FIREBASE INITIALIZATION
 # ============================================================
